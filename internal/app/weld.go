@@ -140,6 +140,11 @@ func (s *Service) callDevice(st *TaskState, deviceType string, resource domain.R
 
 func (s *Service) hasLease(st *TaskState, rt lineage.ResourceType, id domain.ResourceID, now int64) bool {
 	for _, l := range st.Leases {
+		// A released lease no longer authorises any stage, even before its
+		// time window would have elapsed; skip it the same way Overlaps does.
+		if l.Released {
+			continue
+		}
 		if l.ResourceType == rt && l.ResourceID == id && !l.Expired(now) {
 			return true
 		}
