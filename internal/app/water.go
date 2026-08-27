@@ -8,8 +8,6 @@ import (
 	"siphonic-roof-drainage-overflow-release/internal/lineage"
 )
 
-var reusableWaterSession arbitration.WaterTestSession
-
 // WaterTestRequest advances one phase of a zone water test with a scripted
 // gauge or flow-meter reading.
 type WaterTestRequest struct {
@@ -43,14 +41,18 @@ func (s *Service) StartWaterTest(taskID domain.TaskID, opID domain.OperationID, 
 		if err != nil {
 			return nil, err
 		}
-		reusableWaterSession = arbitration.WaterTestSession{
+		// Each task/zone gets its own heap-allocated session. Sharing a
+		// single session variable across tasks crosstalks water-test state:
+		// a second task's StartWaterTest would overwrite the first task's
+		// record, and advancing one task would mutate the other's phase and
+		// readings through the shared pointer.
+		sess := &arbitration.WaterTestSession{
 			Task:      taskID,
 			Zone:      zone,
 			Phase:     arbitration.WaterPhaseFill,
 			VolumeMM3: vol,
 			FillTime:  now,
 		}
-		sess := &reusableWaterSession
 		st.WaterTests[zone] = sess
 		st.appendEvent("WATER_TEST_START", string(zone))
 		return jsonResult(WaterTestResult{Zone: zone, Phase: sess.Phase, VolumeMM3: vol})
