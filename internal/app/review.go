@@ -7,8 +7,6 @@ import (
 	"siphonic-roof-drainage-overflow-release/internal/domain"
 )
 
-var reviewerDirectoryCache map[string]arbitration.Reviewer
-
 // ReviewRequest submits one independent review signature.
 type ReviewRequest struct {
 	Reviewer    string `json:"reviewer"`
@@ -118,15 +116,17 @@ func (s *Service) FinalDecision(taskID domain.TaskID, opID domain.OperationID, d
 }
 
 // reviewerDirectory converts the service reviewer registry into the shape
-// arbitration.ValidateReview expects.
+// arbitration.ValidateReview expects. It is rebuilt on every call so that an
+// administrator revoking a reviewer's qualification (via SetReviewerDirectory)
+// takes effect immediately for the next review submission. Building the
+// directory from the live registry is cheap and is performed while holding
+// s.mu, the same lock that guards s.reviewer.
 func (s *Service) reviewerDirectory() map[string]arbitration.Reviewer {
-	if len(reviewerDirectoryCache) == 0 {
-		reviewerDirectoryCache = make(map[string]arbitration.Reviewer, len(s.reviewer))
-		for id, r := range s.reviewer {
-			reviewerDirectoryCache[id] = arbitration.Reviewer{ID: id, Qualified: r.Qualified, QualExpiry: r.QualExpiry}
-		}
+	dir := make(map[string]arbitration.Reviewer, len(s.reviewer))
+	for id, r := range s.reviewer {
+		dir[id] = arbitration.Reviewer{ID: id, Qualified: r.Qualified, QualExpiry: r.QualExpiry}
 	}
-	return reviewerDirectoryCache
+	return dir
 }
 
 // distinctReviewers returns the set of reviewers who have signed.
