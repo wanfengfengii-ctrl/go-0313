@@ -59,8 +59,13 @@ func NewService(s store.Store, snapshot *catalog.RuleSnapshot, devices weld.Devi
 	if err != nil {
 		return nil, err
 	}
-	var st TaskState
 	for id, data := range rec.Snapshots {
+		// Each task must own its own TaskState value. Declaring st inside
+		// the loop gives every map entry a distinct pointer; a single outer
+		// variable would alias one value across all tasks, so querying
+		// different task ids would return the same state and mutating one
+		// task would leak into every other.
+		var st TaskState
 		if err := json.Unmarshal(data, &st); err != nil {
 			return nil, fmt.Errorf("recover task %s: %w", id, err)
 		}
