@@ -143,7 +143,13 @@ func (s *Server) handleWeldStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Weld = domain.WeldID(r.PathValue("weld"))
-	req.Generation = domain.Generation(parseInt(r.PathValue("generation")))
+	gen, ok := parseGeneration(r.PathValue("generation"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, domain.NewError(domain.CodeInvalidArgument,
+			"generation path segment must be an integer"))
+		return
+	}
+	req.Generation = gen
 	op, ok := requireOpID(w, r)
 	if !ok {
 		return
@@ -309,11 +315,17 @@ func (s *Server) handleGetWeldGenerations(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// parseInt parses a path segment as an int64, returning zero on failure. It
-// is only used for the generation path segment, which is always numeric.
-func parseInt(s string) int64 {
-	n, _ := strconv.ParseInt(s, 10, 64)
-	return n
+// parseGeneration parses the generation path segment. Unlike a silent
+// strconv fallback, it refuses non-numeric input so a malformed path value
+// such as "not-a-number" is rejected at the HTTP boundary instead of being
+// coerced to generation 0 and creating an evidence record. Generations are
+// positive, matching the repair flow which rejects NewGeneration <= 0.
+func parseGeneration(s string) (domain.Generation, bool) {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return domain.Generation(n), true
 }
 
 // compile-time assertion that the weld stage constants remain wired.
