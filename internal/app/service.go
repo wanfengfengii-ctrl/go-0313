@@ -66,6 +66,13 @@ func NewService(s store.Store, snapshot *catalog.RuleSnapshot, devices weld.Devi
 		}
 		svc.tasks[domain.TaskID(id)] = &st
 	}
+	// Rebuild the idempotency index from the committed operation records so a
+	// restart resumes enforcing prior Operation-Id results: a replayed id with
+	// identical content returns the original response and a replayed id with
+	// different content returns an idempotency conflict.
+	for id, op := range rec.Operations {
+		svc.ops[domain.OperationID(id)] = opRecord{Digest: op.Digest, Result: op.Result}
+	}
 	return svc, nil
 }
 
