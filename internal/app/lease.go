@@ -51,14 +51,21 @@ func (s *Service) AcquireLease(taskID domain.TaskID, opID domain.OperationID, di
 			Start:        req.Start,
 			End:          req.End,
 		}
-		st.Leases = append(st.Leases, lease)
-		st.appendEvent("LEASE_ACQUIRED", fmt.Sprintf("%s/%s", req.ResourceType, req.ResourceID))
-		for _, existing := range st.Leases[:len(st.Leases)-1] {
+		// Check for an overlapping effective interval on the same resource
+		// before mutating state. A rejected acquisition must leave no trace:
+		// no lease, no event, and therefore nothing to recover on the next
+		// attempt. Appending first and rolling back on failure pollutes the
+		// in-memory working set with an uncommitted-but-present lease that
+		// keeps conflicting with later, otherwise-available intervals until
+		// the process restarts and rebuilds from the clean snapshot.
+		for _, existing := range st.Leases {
 			if existing.Overlaps(lease) {
 				return nil, domain.NewError(domain.CodeLeaseConflict,
 					fmt.Sprintf("resource %s/%s overlaps an existing lease", req.ResourceType, req.ResourceID))
 			}
 		}
+		st.Leases = append(st.Leases, lease)
+		st.appendEvent("LEASE_ACQUIRED", fmt.Sprintf("%s/%s", req.ResourceType, req.ResourceID))
 		return jsonResult(LeaseResult{
 			ResourceType: req.ResourceType,
 			ResourceID:   req.ResourceID,
