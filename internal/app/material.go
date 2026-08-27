@@ -34,6 +34,11 @@ func (s *Service) MaterialOp(taskID domain.TaskID, opID domain.OperationID, dige
 		if err := requireLocked(st); err != nil {
 			return nil, err
 		}
+		// Validate every identity, port and conservation breach before mutating
+		// state, so a failed operation leaves the in-memory task untouched. The
+		// order matters: a cut that fails the port check must not have already
+		// carved the child into the lineage, or the partial side effect would
+		// leak into subsequent queries until a restart reloaded the snapshot.
 		if req.Child == "" || req.Parent == "" {
 			return nil, domain.NewError(domain.CodeInvalidArgument, "parent and child are required")
 		}
@@ -43,13 +48,6 @@ func (s *Service) MaterialOp(taskID domain.TaskID, opID domain.OperationID, dige
 		if req.Length <= 0 {
 			return nil, domain.NewError(domain.CodeDegenerate, "cut length must be positive")
 		}
-		if err := st.Lineage.Convert(req.Parent, req.Child, req.Kind, req.Length); err != nil {
-			return nil, err
-		}
-		disp := req.Disposition
-		if disp == "" {
-			disp = dispositionForKind(req.Kind, req.BindPort != "")
-		}
 		if req.BindPort != "" {
 			if !st.portExists(req.BindPort) {
 				return nil, domain.NewError(domain.CodeNotFound, "unknown port "+string(req.BindPort))
@@ -58,6 +56,15 @@ func (s *Service) MaterialOp(taskID domain.TaskID, opID domain.OperationID, dige
 				return nil, domain.NewError(domain.CodePortInUse,
 					fmt.Sprintf("port %s already bound to material %s", req.BindPort, prev))
 			}
+		}
+		if err := st.Lineage.Convert(req.Parent, req.Child, req.Kind, req.Length); err != nil {
+			return nil, err
+		}
+		disp := req.Disposition
+		if disp == "" {
+			disp = dispositionForKind(req.Kind, req.BindPort != "")
+		}
+		if req.BindPort != "" {
 			st.PortBindings[req.BindPort] = req.Child
 		}
 		st.Lineage.Dispositions[req.Child] = disp
