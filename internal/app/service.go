@@ -41,6 +41,21 @@ type opRecord struct {
 	Result []byte
 }
 
+// opKey scopes an operation id to the task it targets. Operation-Id is the
+// idempotency key for replay protection within a single task: replaying the
+// same Operation-Id against the same task must return the cached result, but
+// the same Operation-Id used against a different task is a distinct logical
+// operation (each task manages its own material cuts and port bindings) and
+// must execute rather than cross-replay another task's stored result. The
+// composite key keeps each (task, operation) record independent in both the
+// in-memory cache and the durable operation store.
+func opKey(taskID domain.TaskID, opID domain.OperationID) domain.OperationID {
+	if opID == "" {
+		return ""
+	}
+	return domain.OperationID(string(taskID) + "\x00" + string(opID))
+}
+
 // NewService builds a Service, recovering any committed state from the store
 // so a restart resumes with identical snapshots, leases, idempotent responses
 // and final decisions.
@@ -96,8 +111,9 @@ func (s *Service) runCommand(taskID domain.TaskID, opID domain.OperationID, dige
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if opID != "" {
-		if prev, ok := s.ops[opID]; ok {
+	key := opKey(taskID, opID)
+	if key != "" {
+		if prev, ok := s.ops[key]; ok {
 			if prev.Digest != digest {
 				return nil, domain.NewError(domain.CodeIdempotencyConflict, "operation_id reused with different content")
 			}
@@ -120,10 +136,10 @@ func (s *Service) runCommand(taskID domain.TaskID, opID domain.OperationID, dige
 		return nil, domain.NewError(domain.CodeInternal, "serialise snapshot: "+err.Error())
 	}
 
-	if err := s.persist(taskID, opID, digest, body, data); err != nil {
+	if err := s.persist(taskID, key, digest, body, data); err != nil {
 		// Reload committed state so a failed commit leaves no in-memory
 		// partial side effect either.
-		if _, ok := s.ops[opID]; !ok {
+		if _, ok := s.ops[key]; !ok {
 			// The operation was not committed; drop any in-memory change by
 			// re-reading the store snapshot for this task.
 			s.tasks[taskID] = s.reload(taskID)
@@ -131,13 +147,13 @@ func (s *Service) runCommand(taskID domain.TaskID, opID domain.OperationID, dige
 		return nil, err
 	}
 	s.tasks[taskID] = st
-	if opID != "" {
-		s.ops[opID] = opRecord{Digest: digest, Result: body}
+	if key != "" {
+		s.ops[key] = opRecord{Digest: digest, Result: body}
 	}
 	return body, nil
 }
 
-func (s *Service) persist(taskID domain.TaskID, opID domain.OperationID, digest string, result, snapshot []byte) error {
+func (s *Service) persist(taskID domain.TaskID, opKey domain.OperationID, digest string, result, snapshot []byte) error {
 	tx, err := s.store.Begin()
 	if err != nil {
 		return domain.NewError(domain.CodeInternal, "begin transaction: "+err.Error())
@@ -147,8 +163,8 @@ func (s *Service) persist(taskID domain.TaskID, opID domain.OperationID, digest 
 	if err := tx.PutSnapshot(string(taskID), snapshot); err != nil {
 		return domain.NewError(domain.CodeInternal, "write snapshot: "+err.Error())
 	}
-	if opID != "" {
-		if err := tx.PutOperation(opID, digest, result); err != nil {
+	if opKey != "" {
+		if err := tx.PutOperation(opKey, digest, result); err != nil {
 			return domain.NewError(domain.CodeInternal, "write operation: "+err.Error())
 		}
 	}
