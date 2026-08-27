@@ -110,8 +110,27 @@ func (s *Service) runCommand(taskID domain.TaskID, opID domain.OperationID, dige
 		st = NewTaskState(taskID)
 	}
 
+	// A device failure appends a retryable attempt to the audit trail before
+	// the command returns an error. That attempt is durable state — the spec
+	// requires restart to preserve the device retry sequence — so capture the
+	// trail length before the command runs to detect whether one was appended.
+	attemptsBefore := len(st.Attempts)
+
 	body, err := resultJSON(st)
 	if err != nil {
+		// A device failure has no business result to record, but it has
+		// already appended a retryable DeviceAttempt to st.Attempts. Persist
+		// that append-only audit record so a restart restores the same retry
+		// sequence instead of dropping the attempt and restarting from 1.
+		if len(st.Attempts) > attemptsBefore {
+			if perr := s.persistAudit(taskID, st); perr != nil {
+				// Reload committed state so a failed audit commit leaves no
+				// in-memory partial side effect.
+				s.tasks[taskID] = s.reload(taskID)
+				return nil, perr
+			}
+			s.tasks[taskID] = st
+		}
 		return nil, err
 	}
 
@@ -161,6 +180,20 @@ func (s *Service) persist(taskID domain.TaskID, opID domain.OperationID, digest 
 		return domain.NewError(domain.CodeInternal, "commit: "+err.Error())
 	}
 	return nil
+}
+
+// persistAudit commits the task snapshot so that an append-only device
+// attempt recorded during a failed command survives a restart. It carries no
+// operation result: the command itself returned an error, so there is nothing
+// idempotent to replay. Only the durable audit trail (the retry sequence) is
+// preserved, matching the recovery boundary that requires the device retry
+// sequence to be restored after a restart.
+func (s *Service) persistAudit(taskID domain.TaskID, st *TaskState) error {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return domain.NewError(domain.CodeInternal, "serialise audit snapshot: "+err.Error())
+	}
+	return s.persist(taskID, "", "", nil, data)
 }
 
 func (s *Service) reload(taskID domain.TaskID) *TaskState {
